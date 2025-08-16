@@ -1,0 +1,14 @@
+alembic==1.13.1
+sqlalchemy_utils==0.41.2
+supabase==2.4.5
+pydantic-settings
+uvicorn[standard]
+fastapi
+starlette
+SQLAlchemy==2.0.34
+dnspython
+psycopg2-binary
+pydantic-ai
+pydantic-graph
+openai
+pytz==2024.2

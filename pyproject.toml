@@ -1,0 +1,25 @@
+[tool]
+name = "fernlabs-api"
+version = "0.1.0"
+description = "AI-powered workflow generation tool for developers"
+authors = ["Nick Kridler <nmkridler@gmail.com>"]
+license = "MIT"
+
+[dependencies]
+python = "^3.12"
+alembic = "1.13.1"
+sqlalchemy-utils = "0.41.2"
+supabase = "2.4.5"
+pydantic-settings = "2.2.1"
+uvicorn = { version = "*", extras = ["standard"] }
+fastapi = "0.115.0"
+starlette = { version = ">=0.27.0" }
+SQLAlchemy = "2.0.34"
+dnspython = "*"
+psycopg2-binary = "*"
+pydantic-ai = "^0.1.0"
+pydantic-graph = "^0.1.0"
+openai = "^1.60.1"
+celery = "5.4.0"
+redis = "5.2.1"
+pytz = "2024.2"
