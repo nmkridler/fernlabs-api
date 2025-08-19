@@ -10,18 +10,13 @@ class APISettings(BaseSettings):
 
     # OpenAI
     openai_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    mistral_api_key: Optional[str] = None
 
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     debug: bool = False
-
-    # CORS
-    allowed_origins: list[str] = [
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://localhost:8000",
-    ]
 
     class Config:
         env_file = ".env"

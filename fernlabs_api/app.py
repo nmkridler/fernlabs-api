@@ -6,6 +6,13 @@ from fernlabs_api.settings import APISettings
 
 settings = APISettings()
 
+# CORS origins
+allowed_origins = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8000",
+]
+
 app = FastAPI(
     title="FernLabs API",
     description="AI-powered workflow generation tool for developers",
@@ -15,7 +22,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

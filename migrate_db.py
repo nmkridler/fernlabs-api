@@ -48,7 +48,7 @@ def migrate_database():
         )
 
         if result.fetchone():
-            current_default = result.fetchone()[0]
+            current_default = result.fetchone()
             if current_default != "'loading'":
                 print("Updating status column default value...")
                 conn.execute(
