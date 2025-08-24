@@ -21,6 +21,7 @@ def test_create_project():
         "description": "A test project to verify workflow generation",
         "project_type": "data_analysis",
         "github_repo": "https://github.com/testuser/testrepo",
+        "user_id": str(uuid.uuid4()),  # Generate a test user ID
         "prompt": "Create a workflow that reads CSV data, performs data cleaning, applies a machine learning model, and generates a report with visualizations",
     }
 

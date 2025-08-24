@@ -1,0 +1,22 @@
+# Testing dependencies for fernlabs-api
+
+# Core testing framework
+pytest>=6.0.0
+
+# Async testing support
+pytest-asyncio>=0.15.0
+
+# Coverage reporting
+pytest-cov>=3.0.0
+
+# Optional: Parallel test execution
+pytest-xdist>=2.0.0
+
+# Optional: HTML coverage reports
+pytest-html>=3.0.0
+
+# Optional: Test data generation
+faker>=8.0.0
+
+# Optional: Property-based testing
+hypothesis>=6.0.0

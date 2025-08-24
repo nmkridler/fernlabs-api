@@ -83,6 +83,7 @@ class Project(Base):
     workflows = relationship("Workflow", back_populates="project")
     artifacts = relationship("Artifact", back_populates="project")
     plans = relationship("Plan", back_populates="project")
+    agent_calls = relationship("AgentCall", back_populates="project")
 
 
 class Workflow(Base):
@@ -229,3 +230,24 @@ class Plan(Base):
     # Relationships
     user = relationship("User", back_populates="plans")
     project = relationship("Project", back_populates="plans")
+
+
+class AgentCall(Base):
+    """Model for tracking agent calls and responses"""
+
+    __tablename__ = "agent_calls"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"))
+    prompt = Column("prompt", Text, nullable=False)  # The prompt sent to the agent
+    response = Column("response", Text, nullable=False)  # The agent's response
+    created_at = Column(
+        "created_at",
+        DateTime,
+        default=datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    # Relationships
+    project = relationship("Project", back_populates="agent_calls")

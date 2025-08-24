@@ -3,29 +3,23 @@ Standalone AI-powered workflow agent using pydantic_ai
 """
 
 from typing import List, Dict, Any, Optional
+import uuid
+import asyncio
+
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.providers import BaseProvider
+from pydantic_ai.providers import Provider
 from pydantic_ai.providers.mistral import MistralProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.google_gla import GoogleGLAProvider
+from pydantic import BaseModel
 
-from pydantic import BaseModel, Field
-from fernlabs_api.schema.workflow import (
-    WorkflowGenerationRequest,
-    WorkflowDefinition,
-    WorkflowGraph,
-    WorkflowNode,
-    WorkflowEdge,
-    StateVariable,
-    DecisionPoint,
-)
+
 from fernlabs_api.settings import APISettings
-from fernlabs_api.db.model import Plan, Workflow
+from fernlabs_api.db.model import Plan, Workflow, AgentCall, Project
 from sqlalchemy.orm import Session
-import uuid
 
 
-def _provider_factory(provider_name: str, api_key: str) -> BaseProvider:
+def _provider_factory(provider_name: str, api_key: str) -> Provider:
     """Create a provider based on the model name"""
     if provider_name == "mistral":
         return MistralProvider(api_key=api_key)
@@ -45,17 +39,9 @@ class PlanDependencies(BaseModel):
     chat_history: List[
         Dict[str, str]
     ]  # List of {"role": "user/assistant", "content": "message"}
-    db: Session
+    db: Any  # Accept any type for testing flexibility
 
-
-class PlanRequest(BaseModel):
-    """Request for plan creation or editing"""
-
-    project_description: str
-    project_type: Optional[str] = None
-    requirements: Optional[List[str]] = None
-    constraints: Optional[List[str]] = None
-    existing_plan: Optional[str] = None  # For editing existing plans
+    model_config = {"arbitrary_types_allowed": True}
 
 
 class PlanResponse(BaseModel):
@@ -65,38 +51,6 @@ class PlanResponse(BaseModel):
     summary: str
     key_phases: List[str]
     estimated_duration: str
-
-
-class NodeRelationshipRequest(BaseModel):
-    """Request to translate a plan into nodes and relationships"""
-
-    plan: str
-    workflow_type: str = "general"  # e.g., "data_pipeline", "ml_training", "web_app"
-
-
-class NodeRelationshipResponse(BaseModel):
-    """Response containing nodes and their relationships"""
-
-    nodes: List[WorkflowNode]
-    edges: List[WorkflowEdge]
-    state_variables: List[StateVariable]
-    decision_points: List[DecisionPoint]
-
-
-class MermaidRequest(BaseModel):
-    """Request to generate a mermaid chart from nodes and relationships"""
-
-    nodes: List[WorkflowNode]
-    edges: List[WorkflowEdge]
-    chart_type: str = "flowchart"  # flowchart, graph, sequence
-
-
-class MermaidResponse(BaseModel):
-    """Response containing the mermaid chart definition"""
-
-    mermaid_code: str
-    chart_type: str
-    description: str
 
 
 class WorkflowAgent:
@@ -114,7 +68,10 @@ class WorkflowAgent:
                 "You are an expert workflow designer and project planner. "
                 "You can create project plans, translate them into workflow structures, "
                 "and generate Mermaid charts for visualization. "
-                "Always provide comprehensive, actionable outputs."
+                "Always provide comprehensive, actionable outputs. "
+                "IMPORTANT: When working with existing plans, use the assess_plan_and_ask_followup "
+                "tool to analyze the plan and ask the most important follow-up question to improve it. "
+                "This helps ensure plans are continuously refined and enhanced."
             ),
             provider=_provider_factory(
                 settings.api_model_provider, settings.api_model_key
@@ -124,18 +81,214 @@ class WorkflowAgent:
         # Register tools with the agent
         self._register_tools()
 
+    async def _log_agent_call(
+        self, db: Session, project_id: uuid.UUID, prompt: str, response: str
+    ):
+        """Log an agent call and response to the database"""
+        agent_call = AgentCall(
+            project_id=project_id,
+            prompt=prompt,
+            response=response,
+        )
+        db.add(agent_call)
+        db.commit()
+
+    async def _run_agent_with_logging(self, prompt: str, deps: PlanDependencies) -> Any:
+        """Run the agent with automatic logging of calls and responses"""
+        try:
+            # Run the agent
+            result = await self.agent.run(prompt, deps=deps)
+
+            await asyncio.sleep(1)
+
+            # Log the call and response
+            response_text = (
+                str(result.output) if hasattr(result, "output") else str(result)
+            )
+            await self._log_agent_call(deps.db, deps.project_id, prompt, response_text)
+
+            return result
+        except Exception as e:
+            # Log failed calls as well
+            error_response = f"Error: {str(e)}"
+            await self._log_agent_call(deps.db, deps.project_id, prompt, error_response)
+            raise
+
+    def _update_project_status(self, db: Session, project_id: uuid.UUID, status: str):
+        """Update the project status in the database"""
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if project:
+            project.status = status
+            db.commit()
+
+    def _generate_mermaid_chart(self, workflow_data: Dict[str, Any]) -> str:
+        """Convert workflow data into a Mermaid flowchart"""
+
+        try:
+            nodes = workflow_data.get("nodes", [])
+            edges = workflow_data.get("edges", [])
+
+            if not nodes:
+                return "flowchart TD\n    A[No nodes found] --> B[Please check workflow data]"
+
+            # Start building the Mermaid chart
+            mermaid_lines = ["flowchart TD"]
+
+            # Add nodes
+            for node in nodes:
+                node_id = node.get("id", "unknown")
+                node_name = node.get("name", "Unnamed Node")
+                node_type = node.get("type", "task")
+
+                # Format node based on type
+                if node_type == "decision":
+                    mermaid_lines.append(f"    {node_id}{{ {node_name} }}")
+                elif node_type == "start":
+                    mermaid_lines.append(f"    {node_id}([ {node_name} ])")
+                elif node_type == "end":
+                    mermaid_lines.append(f"    {node_id}([ {node_name} ])")
+                else:
+                    mermaid_lines.append(f"    {node_id}[ {node_name} ]")
+
+            # Add edges
+            for edge in edges:
+                source = edge.get("source", "unknown")
+                target = edge.get("target", "unknown")
+                label = edge.get("label", "")
+
+                if label:
+                    mermaid_lines.append(f"    {source} -->|{label}| {target}")
+                else:
+                    mermaid_lines.append(f"    {source} --> {target}")
+
+            return "\n".join(mermaid_lines)
+
+        except Exception as e:
+            # Fallback to a simple error chart
+            return f"""flowchart TD
+    A[Error generating chart] --> B[Error: {str(e)}]
+    B --> C[Please check workflow data format]"""
+
+    async def _generate_workflow_from_plan(
+        self, ctx: RunContext[PlanDependencies], plan_text: str
+    ):
+        """Generate workflow structure from a plan and store it in the database"""
+
+        workflow_prompt = f"""
+        Convert the following project plan into a structured workflow with nodes and relationships:
+
+        Plan:
+        {plan_text}
+
+        Create a comprehensive workflow that includes:
+
+        1. **Workflow Nodes**: Each representing a specific task, decision point, or control flow element
+           - Each node should have a clear purpose and responsibility
+           - Include input/output specifications
+           - Consider error handling and success/failure criteria
+
+        2. **State Variables**: Track progress and data throughout the workflow
+           - Data being processed or transformed
+           - Progress indicators and status flags
+           - Configuration parameters and settings
+           - Results and outputs from each step
+
+        3. **Decision Points**: Where the workflow can branch based on conditions
+           - Business logic decisions
+           - Error handling branches
+           - Conditional processing paths
+           - Quality gates and validation checkpoints
+
+        4. **Edges**: Show the logical flow between nodes
+           - Sequential task dependencies
+           - Conditional branching paths
+           - Error handling flows
+           - Parallel execution paths where applicable
+
+        The workflow should be:
+        - Executable and automatable
+        - Well-structured with clear entry/exit points
+        - Flexible enough to handle variations in data and conditions
+        - Properly documented for implementation
+
+        Return a complete workflow structure with all components properly defined.
+        """
+
+        # Generate workflow structure
+        workflow_result = await self._run_agent_with_logging(workflow_prompt, ctx.deps)
+
+        # Generate Mermaid chart from the workflow
+        mermaid_chart = self._generate_mermaid_chart(workflow_result.output)
+
+        # Store the workflow in the database
+        await self._store_workflow_in_db(
+            ctx.deps.db,
+            ctx.deps.user_id,
+            ctx.deps.project_id,
+            workflow_result.output,
+            "general",
+            plan_text,
+            mermaid_chart,
+        )
+
     def _register_tools(self):
         """Register all tools with the agent"""
 
         @self.agent.tool
+        async def assess_plan_and_ask_followup(
+            ctx: RunContext[PlanDependencies],
+            existing_plan: str,
+        ) -> Dict[str, Any]:
+            """Assess an existing plan and ask a follow-up question to improve it"""
+
+            # Build the prompt to analyze the existing plan and identify areas for improvement
+            chat_context = "\n".join(
+                [
+                    f"{msg['role'].title()}: {msg['content']}"
+                    for msg in ctx.deps.chat_history
+                ]
+            )
+
+            prompt = f"""
+            Analyze the following existing plan and conversation history to identify the most important follow-up question:
+
+            Existing Plan:
+            {existing_plan}
+
+            Conversation History:
+            {chat_context}
+
+            Based on this analysis, please:
+
+            1. **Assess the Plan**: What aspects are well-defined and what could be improved?
+            2. **Identify the Most Critical Gap**: What single piece of information would most improve this plan?
+            3. **Generate One Follow-up Question**: Ask the most important question to gather missing information
+            4. **Explain Why This Question Matters**: Provide a brief rationale for why this question is critical
+
+            Focus on asking about:
+            - Missing technical details or specifications
+            - Unclear requirements or constraints
+            - Resource or timeline considerations
+            - Risk factors or dependencies
+            - Success criteria or validation methods
+
+            Return a single, focused follow-up question that will most improve the plan.
+            """
+
+            # Use the agent to analyze the plan and generate the follow-up question
+            result = await self._run_agent_with_logging(prompt, ctx.deps)
+
+            # Return the actual output from the LLM result
+            return result.output
+
+        @self.agent.tool
         async def create_plan(
             ctx: RunContext[PlanDependencies],
-            project_description: str,
-            project_type: Optional[str] = None,
-            requirements: Optional[List[str]] = None,
-            constraints: Optional[List[str]] = None,
         ) -> PlanResponse:
             """Create a comprehensive project plan from description and requirements"""
+
+            # Set project status to loading
+            self._update_project_status(ctx.deps.db, ctx.deps.project_id, "loading")
 
             # Build the prompt with chat history context
             chat_context = "\n".join(
@@ -146,15 +299,10 @@ class WorkflowAgent:
             )
 
             prompt = f"""
-            Based on the following conversation history and project requirements, create a comprehensive project plan:
+            Based on the following conversation history create a comprehensive project plan:
 
             Conversation History:
             {chat_context}
-
-            Project Description: {project_description}
-            Project Type: {project_type or "general"}
-            {f"Requirements: {', '.join(requirements)}" if requirements else ""}
-            {f"Constraints: {', '.join(constraints)}" if constraints else ""}
 
             Create a detailed plan that includes:
             1. A clear project overview and objectives
@@ -168,7 +316,7 @@ class WorkflowAgent:
             """
 
             # Use the agent to generate the plan
-            result = await self.agent.run(prompt, deps=ctx.deps)
+            result = await self._run_agent_with_logging(prompt, ctx.deps)
 
             # Parse the plan into steps and save to database
             plan_text = result.output.plan
@@ -186,18 +334,23 @@ class WorkflowAgent:
 
             ctx.deps.db.commit()
 
+            # Generate workflow from the plan
+            await self._generate_workflow_from_plan(ctx, plan_text)
+
+            # Set project status to completed
+            self._update_project_status(ctx.deps.db, ctx.deps.project_id, "completed")
+
             return result.output
 
         @self.agent.tool
         async def edit_plan(
             ctx: RunContext[PlanDependencies],
-            project_description: str,
             existing_plan: str,
-            project_type: Optional[str] = None,
-            requirements: Optional[List[str]] = None,
-            constraints: Optional[List[str]] = None,
         ) -> PlanResponse:
             """Edit and improve an existing project plan"""
+
+            # Set project status to loading
+            self._update_project_status(ctx.deps.db, ctx.deps.project_id, "loading")
 
             # Build the prompt with chat history context and existing plan
             chat_context = "\n".join(
@@ -216,12 +369,6 @@ class WorkflowAgent:
             Original Plan:
             {existing_plan}
 
-            Project Context:
-            Project Description: {project_description}
-            Project Type: {project_type or "general"}
-            {f"Requirements: {', '.join(requirements)}" if requirements else ""}
-            {f"Constraints: {', '.join(constraints)}" if constraints else ""}
-
             Please analyze the existing plan and:
             1. Identify areas that need improvement or updates
             2. Add missing details or phases based on new requirements
@@ -235,7 +382,7 @@ class WorkflowAgent:
             """
 
             # Use the agent to generate the improved plan
-            result = await self.agent.run(prompt, deps=ctx.deps)
+            result = await self._run_agent_with_logging(prompt, ctx.deps)
 
             # Parse the improved plan into steps
             improved_plan_text = result.output.plan
@@ -266,87 +413,13 @@ class WorkflowAgent:
 
             ctx.deps.db.commit()
 
-            return result.output
+            # Generate workflow from the improved plan
+            await self._generate_workflow_from_plan(ctx, improved_plan_text)
 
-        @self.agent.tool
-        async def translate_to_nodes(
-            ctx: RunContext[PlanDependencies],
-            plan: str,
-            workflow_type: str = "general",
-        ) -> NodeRelationshipResponse:
-            """Translate a project plan into structured workflow nodes and relationships"""
-
-            # Build the prompt for workflow translation
-            prompt = f"""
-            Convert the following project plan into a structured workflow with nodes and relationships:
-
-            Plan:
-            {plan}
-
-            Workflow Type: {workflow_type}
-
-            Create a comprehensive workflow that includes:
-
-            1. **Workflow Nodes**: Each representing a specific task, decision point, or control flow element
-               - Each node should have a clear purpose and responsibility
-               - Include input/output specifications
-               - Consider error handling and success/failure criteria
-
-            2. **State Variables**: Track progress and data throughout the workflow
-               - Data being processed or transformed
-               - Progress indicators and status flags
-               - Configuration parameters and settings
-               - Results and outputs from each step
-
-            3. **Decision Points**: Where the workflow can branch based on conditions
-               - Business logic decisions
-               - Error handling branches
-               - Conditional processing paths
-               - Quality gates and validation checkpoints
-
-            4. **Edges**: Show the logical flow between nodes
-               - Sequential task dependencies
-               - Conditional branching paths
-               - Error handling flows
-               - Parallel execution paths where applicable
-
-            The workflow should be:
-            - Executable and automatable
-            - Well-structured with clear entry/exit points
-            - Flexible enough to handle variations in data and conditions
-            - Properly documented for implementation
-            - Suitable for the specified workflow type: {workflow_type}
-
-            Return a complete workflow structure with all components properly defined.
-            """
-
-            # Use the agent to generate the workflow structure
-            result = await self.agent.run(prompt, deps=ctx.deps)
-
-            # Store the workflow in the database
-            await self._store_workflow_in_db(
-                ctx.deps.db,
-                ctx.deps.user_id,
-                ctx.deps.project_id,
-                result.output,
-                workflow_type,
-                plan,
-            )
+            # Set project status to completed
+            self._update_project_status(ctx.deps.db, ctx.deps.project_id, "completed")
 
             return result.output
-
-        @self.agent.tool
-        async def generate_mermaid_chart(
-            ctx: RunContext[PlanDependencies],
-            nodes: List[WorkflowNode],
-            edges: List[WorkflowEdge],
-            chart_type: str = "flowchart",
-        ) -> MermaidResponse:
-            """Generate a Mermaid chart from workflow nodes and relationships"""
-
-            # This tool will be called by the agent when needed
-            # The agent will handle the actual chart generation logic
-            pass
 
     def _parse_plan_into_steps(self, plan_text: str) -> List[str]:
         """Parse the generated plan text into individual steps"""
@@ -441,161 +514,30 @@ class WorkflowAgent:
             ],
         }
 
-    async def create_complete_workflow(
+    async def assess_plan_and_ask_followup(
         self,
-        project_description: str,
-        project_type: Optional[str] = None,
-        requirements: Optional[List[str]] = None,
-        constraints: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """Create a complete workflow from project description to mermaid chart"""
-
-        prompt = f"""
-        Create a complete workflow for the following project:
-
-        Project Description: {project_description}
-        Project Type: {project_type or "general"}
-        {f"Requirements: {', '.join(requirements)}" if requirements else ""}
-        {f"Constraints: {', '.join(constraints)}" if constraints else ""}
-
-        Please:
-        1. Create a comprehensive project plan using create_plan
-        2. Translate that plan into workflow nodes and relationships using translate_to_nodes
-        3. Generate a Mermaid chart using generate_mermaid_chart
-        4. Return a complete workflow definition
-
-        Use the appropriate tools for each step and ensure the workflow is:
-        - Well-structured and executable
-        - Clear about task dependencies and flow
-        - Suitable for automation
-        - Properly visualized with the Mermaid chart
-        """
-
-        result = await self.agent.run(prompt)
-        return result.output
-
-    async def create_plan_only(
-        self,
-        project_description: str,
-        project_type: Optional[str] = None,
-        requirements: Optional[List[str]] = None,
-        constraints: Optional[List[str]] = None,
-    ) -> PlanResponse:
-        """Create only a project plan"""
-
-        prompt = f"""
-        Create a comprehensive project plan for:
-
-        Project Description: {project_description}
-        Project Type: {project_type or "general"}
-        {f"Requirements: {', '.join(requirements)}" if requirements else ""}
-        {f"Constraints: {', '.join(constraints)}" if constraints else ""}
-
-        Use create_plan to generate a detailed, actionable plan.
-        """
-
-        result = await self.agent.run(prompt)
-        return result.output
-
-    async def edit_plan_only(
-        self,
-        project_description: str,
+        existing_plan: str,
         user_id: uuid.UUID,
         project_id: uuid.UUID,
-        project_type: Optional[str] = None,
-        requirements: Optional[List[str]] = None,
-        constraints: Optional[List[str]] = None,
-        chat_history: Optional[List[Dict[str, str]]] = None,
-        db: Optional[Session] = None,
-    ) -> PlanResponse:
-        """Edit only an existing project plan"""
-
-        if not db:
-            raise ValueError("Database session is required for editing plans")
-
-        # Get existing plan from database
-        existing_plan_text = self._get_existing_plan_text(db, user_id, project_id)
-
-        if not existing_plan_text:
-            raise ValueError("No existing plan found for this project")
+        chat_history: List[Dict[str, str]],
+        db: Session,
+    ) -> Dict[str, Any]:
+        """Assess an existing plan and ask a follow-up question to improve it"""
 
         # Create dependencies
         deps = PlanDependencies(
             user_id=user_id,
             project_id=project_id,
-            chat_history=chat_history or [],
+            chat_history=chat_history,
             db=db,
         )
 
         prompt = f"""
-        Review and improve this existing project plan:
-
-        Original Plan: {existing_plan_text}
-        Project Description: {project_description}
-        Project Type: {project_type or "general"}
-        {f"Requirements: {', '.join(requirements)}" if requirements else ""}
-        {f"Constraints: {', '.join(constraints)}" if constraints else ""}
-
-        Use edit_plan to improve the plan while maintaining its core structure.
+        Assess this existing plan and identify the most important follow-up question to improve it.
+        Use the assess_plan_and_ask_followup tool with the existing plan: {existing_plan}
         """
 
-        result = await self.agent.run(prompt, deps=deps)
-        return result.output
-
-    async def generate_workflow_structure(
-        self,
-        plan: str,
-        workflow_type: str = "general",
-        user_id: Optional[uuid.UUID] = None,
-        project_id: Optional[uuid.UUID] = None,
-        db: Optional[Session] = None,
-    ) -> NodeRelationshipResponse:
-        """Generate workflow structure from an existing plan"""
-
-        if not all([user_id, project_id, db]):
-            raise ValueError(
-                "user_id, project_id, and db are required for workflow generation"
-            )
-
-        # Create dependencies
-        deps = PlanDependencies(
-            user_id=user_id,
-            project_id=project_id,
-            chat_history=[],  # Empty for now, could be enhanced later
-            db=db,
-        )
-
-        prompt = f"""
-        Convert this project plan into a structured workflow:
-
-        Plan: {plan}
-        Workflow Type: {workflow_type}
-
-        Use translate_to_nodes to create workflow nodes, edges, state variables, and decision points.
-        """
-
-        result = await self.agent.run(prompt, deps=deps)
-        return result.output
-
-    async def create_mermaid_visualization(
-        self,
-        nodes: List[WorkflowNode],
-        edges: List[WorkflowEdge],
-        chart_type: str = "flowchart",
-    ) -> MermaidResponse:
-        """Create a Mermaid chart from workflow structure"""
-
-        prompt = f"""
-        Generate a Mermaid chart for this workflow:
-
-        Nodes: {[node.model_dump() for node in nodes]}
-        Edges: {[edge.model_dump() for edge in edges]}
-        Chart Type: {chart_type}
-
-        Use generate_mermaid_chart to create a clear, readable visualization.
-        """
-
-        result = await self.agent.run(prompt)
+        result = await self._run_agent_with_logging(prompt, deps)
         return result.output
 
     async def _store_workflow_in_db(
@@ -603,26 +545,23 @@ class WorkflowAgent:
         db: Session,
         user_id: uuid.UUID,
         project_id: uuid.UUID,
-        workflow_data: NodeRelationshipResponse,
+        workflow_data: Dict[str, Any],
         workflow_type: str,
         original_plan: str,
+        mermaid_chart: str,
     ):
         """Store the generated workflow in the workflows table"""
 
         # Convert nodes and edges to JSON format for storage
         workflow_graph = {
-            "nodes": [node.model_dump() for node in workflow_data.nodes],
-            "edges": [edge.model_dump() for edge in workflow_data.edges],
+            "nodes": workflow_data.get("nodes", []),
+            "edges": workflow_data.get("edges", []),
         }
 
         # Convert state variables to JSON schema format
         state_schema = {
-            "state_variables": [
-                var.model_dump() for var in workflow_data.state_variables
-            ],
-            "decision_points": [
-                dp.model_dump() for dp in workflow_data.decision_points
-            ],
+            "state_variables": workflow_data.get("state_variables", []),
+            "decision_points": workflow_data.get("decision_points", []),
         }
 
         # Create workflow name from project context
@@ -646,9 +585,85 @@ class WorkflowAgent:
         )
 
         db.add(workflow)
+
+        # Update the project's Mermaid chart
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if project:
+            project.mermaid_chart = mermaid_chart
+
         db.commit()
 
         return workflow
+
+    def generate_mermaid_from_workflow(self, workflow_data: Dict[str, Any]) -> str:
+        """Generate a Mermaid chart from workflow data"""
+        return self._generate_mermaid_chart(workflow_data)
+
+    def get_project_agent_calls(
+        self, db: Session, project_id: uuid.UUID, limit: int = 100
+    ) -> List[AgentCall]:
+        """Retrieve agent call history for a project"""
+        agent_calls = (
+            db.query(AgentCall)
+            .filter(AgentCall.project_id == project_id)
+            .order_by(AgentCall.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        return agent_calls
+
+    def get_agent_call_summary(
+        self, db: Session, project_id: uuid.UUID
+    ) -> Dict[str, Any]:
+        """Get a summary of agent calls for a project"""
+        agent_calls = self.get_project_agent_calls(db, project_id)
+
+        if not agent_calls:
+            return {"exists": False, "message": "No agent calls found for this project"}
+
+        # Calculate some basic statistics
+        total_calls = len(agent_calls)
+        successful_calls = len(
+            [call for call in agent_calls if not call.response.startswith("Error:")]
+        )
+        failed_calls = total_calls - successful_calls
+
+        # Get recent activity
+        recent_calls = agent_calls[:10]  # Last 10 calls
+
+        return {
+            "exists": True,
+            "total_calls": total_calls,
+            "successful_calls": successful_calls,
+            "failed_calls": failed_calls,
+            "success_rate": (successful_calls / total_calls) * 100
+            if total_calls > 0
+            else 0,
+            "first_call": agent_calls[-1].created_at if agent_calls else None,
+            "last_call": agent_calls[0].created_at if agent_calls else None,
+            "recent_calls": [
+                {
+                    "id": str(call.id),
+                    "prompt_preview": call.prompt[:100] + "..."
+                    if len(call.prompt) > 100
+                    else call.prompt,
+                    "response_preview": call.response[:100] + "..."
+                    if len(call.response) > 100
+                    else call.response,
+                    "created_at": call.created_at,
+                    "is_error": call.response.startswith("Error:"),
+                }
+                for call in recent_calls
+            ],
+        }
+
+    def get_agent_call_details(
+        self, db: Session, call_id: uuid.UUID
+    ) -> Optional[AgentCall]:
+        """Get detailed information about a specific agent call"""
+        agent_call = db.query(AgentCall).filter(AgentCall.id == call_id).first()
+        return agent_call
 
     def get_project_workflows(
         self, db: Session, user_id: uuid.UUID, project_id: uuid.UUID
@@ -735,23 +750,3 @@ class WorkflowAgent:
             "project_id": str(workflow.project_id),
             "user_id": str(workflow.user_id),
         }
-
-
-# Legacy WorkflowGenerator class for backward compatibility
-class WorkflowGenerator:
-    """Legacy workflow generator - use WorkflowAgent instead"""
-
-    def __init__(self, settings: APISettings):
-        self.agent = WorkflowAgent(settings)
-
-    async def generate_workflow(
-        self, request: WorkflowGenerationRequest
-    ) -> WorkflowDefinition:
-        """Generate a complete workflow definition from user description"""
-        result = await self.agent.create_complete_workflow(
-            project_description=request.project_description,
-            project_type=request.project_type,
-            requirements=request.requirements,
-            constraints=request.constraints,
-        )
-        return result["complete_workflow"]
