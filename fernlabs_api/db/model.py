@@ -43,6 +43,7 @@ class User(Base):
     # Relationships
     projects = relationship("Project", back_populates="user")
     workflows = relationship("Workflow", back_populates="user")
+    plans = relationship("Plan", back_populates="user")
 
 
 class Project(Base):
@@ -54,9 +55,6 @@ class Project(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     name = Column("name", String(255), nullable=False)
     description = Column("description", Text)
-    project_type = Column(
-        "project_type", String(100)
-    )  # e.g., "data_analysis", "ml_pipeline"
     github_repo = Column("github_repo", String(500))  # GitHub repository URL
     prompt = Column(
         "prompt", Text, nullable=False
@@ -64,6 +62,7 @@ class Project(Base):
     status = Column(
         "status", String(50), default="loading"
     )  # loading, completed, failed, active, archived, deleted
+    mermaid_chart = Column("mermaid_chart", Text)  # Mermaid chart for the workflow
     created_at = Column(
         "created_at",
         DateTime,
@@ -83,6 +82,7 @@ class Project(Base):
     user = relationship("User", back_populates="projects")
     workflows = relationship("Workflow", back_populates="project")
     artifacts = relationship("Artifact", back_populates="project")
+    plans = relationship("Plan", back_populates="project")
 
 
 class Workflow(Base):
@@ -199,3 +199,33 @@ class Artifact(Base):
 
     # Relationships
     project = relationship("Project", back_populates="artifacts")
+
+
+class Plan(Base):
+    """Plan model representing workflow planning steps"""
+
+    __tablename__ = "plans"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"))
+    step_id = Column("step_id", Integer, nullable=False)  # Ordering of plan steps
+    text = Column("text", Text, nullable=False)  # Plan step content
+    created_at = Column(
+        "created_at",
+        DateTime,
+        default=datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at = Column(
+        "updated_at",
+        DateTime,
+        default=datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    # Relationships
+    user = relationship("User", back_populates="plans")
+    project = relationship("Project", back_populates="plans")

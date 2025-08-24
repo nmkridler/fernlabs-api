@@ -8,10 +8,11 @@ class APISettings(BaseSettings):
     # Database
     database_url: str = "postgresql://postgres:password@localhost/fernlabs"
 
-    # OpenAI
-    openai_api_key: Optional[str] = None
-    gemini_api_key: Optional[str] = None
-    mistral_api_key: Optional[str] = None
+    # AI Model Configuration
+    api_model_type: str = "mistral"  # openai, gemini, mistral, anthropic
+    api_model_provider: str = "mistral"  # Provider name for the factory function
+    api_model_name: str = "mistral:mistral-large-latest"  # Full model identifier
+    api_model_key: Optional[str] = None  # API key for the selected provider
 
     # API
     api_host: str = "0.0.0.0"

@@ -16,6 +16,7 @@ class ProjectBase(BaseModel):
 class ProjectCreate(ProjectBase):
     """Schema for creating a new project"""
 
+    user_id: uuid.UUID  # User ID for the project owner
     prompt: str  # User's prompt for workflow generation
 
 
@@ -36,6 +37,9 @@ class ProjectResponse(ProjectBase):
     user_id: uuid.UUID
     prompt: str
     status: str  # "loading", "completed", "failed"
+    mermaid_chart: Optional[str] = (
+        None  # Mermaid chart syntax for workflow visualization
+    )
     created_at: datetime
     updated_at: datetime
 
