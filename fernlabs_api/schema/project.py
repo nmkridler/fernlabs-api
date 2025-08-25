@@ -9,7 +9,6 @@ class ProjectBase(BaseModel):
 
     name: str
     description: Optional[str] = None
-    project_type: Optional[str] = None
     github_repo: Optional[str] = None
 
 
@@ -25,7 +24,6 @@ class ProjectUpdate(BaseModel):
 
     name: Optional[str] = None
     description: Optional[str] = None
-    project_type: Optional[str] = None
     github_repo: Optional[str] = None
     status: Optional[str] = None
 

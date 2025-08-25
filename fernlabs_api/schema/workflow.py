@@ -99,7 +99,9 @@ class WorkflowResponse(WorkflowBase):
     id: uuid.UUID
     project_id: uuid.UUID
     user_id: uuid.UUID
-    workflow_definition: WorkflowDefinition
+    workflow_graph: Dict[str, Any]  # JSON field from database
+    state_schema: Dict[str, Any]  # JSON field from database
+    decision_points: Optional[List[Any]] = None  # JSON field from database
     version: str
     status: str
     generation_prompt: str
