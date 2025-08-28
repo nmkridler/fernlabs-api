@@ -81,7 +81,6 @@ class Project(Base):
     # Relationships
     user = relationship("User", back_populates="projects")
     workflows = relationship("Workflow", back_populates="project")
-    artifacts = relationship("Artifact", back_populates="project")
     plans = relationship("Plan", back_populates="project")
     agent_calls = relationship("AgentCall", back_populates="project")
 
@@ -130,76 +129,6 @@ class Workflow(Base):
     # Relationships
     project = relationship("Project", back_populates="workflows")
     user = relationship("User", back_populates="workflows")
-    executions = relationship("WorkflowExecution", back_populates="workflow")
-
-
-class WorkflowExecution(Base):
-    """Model for tracking workflow executions"""
-
-    __tablename__ = "workflow_executions"
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
-    workflow_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workflows.id"))
-    execution_id = Column("execution_id", String(255), unique=True, nullable=False)
-
-    # Execution state
-    status = Column(
-        "status", String(50), default="running"
-    )  # running, completed, failed, paused
-    current_state = Column("current_state", JSON)  # Current workflow state
-    state_history = Column("state_history", JSON)  # State transition history
-
-    # Execution metadata
-    started_at = Column("started_at", DateTime, default=datetime.now(UTC))
-    completed_at = Column("completed_at", DateTime)
-    total_duration = Column("total_duration", Integer)  # Duration in seconds
-
-    # Results and logs
-    results = Column("results", JSON)  # Final execution results
-    logs = Column("logs", Text)  # Execution logs
-    error_message = Column("error_message", Text)  # Error details if failed
-
-    # Relationships
-    workflow = relationship("Workflow", back_populates="executions")
-
-
-class Artifact(Base):
-    """Model for storing workflow artifacts (data, files, etc.)"""
-
-    __tablename__ = "artifacts"
-
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
-    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"))
-    name = Column("name", String(255), nullable=False)
-    description = Column("description", Text)
-
-    # Artifact metadata
-    artifact_type = Column("artifact_type", String(100))  # csv, json, model, etc.
-    file_path = Column("file_path", String(500))  # Path to stored artifact
-    file_size = Column("file_size", Integer)  # Size in bytes
-    mime_type = Column("mime_type", String(100))
-
-    # Metadata
-    tags = Column("tags", JSON)  # JSON array of tags
-    artifact_metadata = Column("artifact_metadata", JSON)  # Additional metadata
-
-    created_at = Column(
-        "created_at",
-        DateTime,
-        default=datetime.now(UTC),
-        nullable=False,
-        server_default=func.now(),
-    )
-    updated_at = Column(
-        "updated_at",
-        DateTime,
-        default=datetime.now(UTC),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-    # Relationships
-    project = relationship("Project", back_populates="artifacts")
 
 
 class Plan(Base):

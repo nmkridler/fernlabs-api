@@ -1,5 +1,30 @@
 """
-AI-powered workflow generation engine using pydantic_ai and pydantic-graph
+AI-powered workflow system using pydantic-graph.
 """
 
-# FastAPI background tasks will be used instead of Celery
+from fernlabs_api.workflow.workflow_agent import WorkflowAgent
+from fernlabs_api.workflow.nodes import (
+    CreatePlan,
+    AssessPlan,
+    WaitForUserInput,
+    EditPlan,
+)
+from fernlabs_api.workflow.base import (
+    WorkflowState,
+    WorkflowDependencies,
+    PlanResponse,
+    PlanDependencies,
+)
+
+# For backward compatibility, also export the main classes
+__all__ = [
+    "WorkflowAgent",
+    "CreatePlan",
+    "AssessPlan",
+    "WaitForUserInput",
+    "EditPlan",
+    "WorkflowState",
+    "WorkflowDependencies",
+    "PlanResponse",
+    "PlanDependencies",
+]

@@ -9,8 +9,6 @@ from datetime import datetime
 from pydantic_graph import Graph, BaseNode as Node, Edge
 from fernlabs_api.schema.workflow import (
     WorkflowDefinition,
-    WorkflowExecutionRequest,
-    WorkflowExecutionResponse,
 )
 from fernlabs_api.settings import APISettings
 
@@ -25,61 +23,28 @@ class WorkflowExecutor:
         self.settings = settings
 
     async def execute_workflow(
-        self, workflow: WorkflowDefinition, request: WorkflowExecutionRequest
-    ) -> WorkflowExecutionResponse:
+        self,
+        workflow: WorkflowDefinition,
+        initial_state: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Execute a workflow with the given initial state"""
 
         try:
-            # Create execution response
-            execution_id = f"exec_{datetime.now().isoformat()}"
-            execution_response = WorkflowExecutionResponse(
-                execution_id=execution_id,
-                workflow_id=request.workflow_id,
-                status="running",
-                started_at=datetime.now(),
-                current_state=request.initial_state or {},
-            )
-
             # Build the graph from workflow definition
             graph = self._build_graph(workflow)
 
             # Initialize state
-            state = request.initial_state or {}
+            state = initial_state or {}
             state.update(self._get_default_state(workflow))
 
             # Execute the workflow
             final_state = await self._execute_graph(graph, state, workflow)
 
-            # Update execution response
-            execution_response.status = "completed"
-            execution_response.completed_at = datetime.now()
-            execution_response.results = final_state
-            execution_response.current_state = final_state
-
-            # Calculate duration
-            if execution_response.started_at and execution_response.completed_at:
-                duration = (
-                    execution_response.completed_at - execution_response.started_at
-                ).total_seconds()
-                execution_response.total_duration = int(duration)
-
-            return execution_response
+            return final_state
 
         except Exception as e:
             logger.error(f"Workflow execution failed: {str(e)}")
-
-            # Create error response
-            execution_response = WorkflowExecutionResponse(
-                execution_id=execution_id
-                if "execution_id" in locals()
-                else f"exec_{datetime.now().isoformat()}",
-                workflow_id=request.workflow_id,
-                status="failed",
-                started_at=datetime.now(),
-                error_message=str(e),
-            )
-
-            return execution_response
+            raise
 
     def _build_graph(self, workflow: WorkflowDefinition) -> Graph:
         """Build a pydantic-graph Graph from workflow definition"""

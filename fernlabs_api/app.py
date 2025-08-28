@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from fernlabs_api.routes import projects, executions, artifacts
+from fernlabs_api.routes import projects
 from fernlabs_api.settings import APISettings
 
 settings = APISettings()
@@ -43,7 +43,3 @@ async def root():
 
 # Include routers
 app.include_router(projects.router, prefix="/api/v1/projects", tags=["projects"])
-
-app.include_router(executions.router, prefix="/api/v1/executions", tags=["executions"])
-
-app.include_router(artifacts.router, prefix="/api/v1/artifacts", tags=["artifacts"])

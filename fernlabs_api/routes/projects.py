@@ -27,6 +27,61 @@ router = APIRouter()
 settings = APISettings()
 
 
+def _update_project_status(project: Project, status: str, db: Session) -> None:
+    """Update project status and commit to database."""
+    project.status = status
+    db.commit()
+
+
+def _project_to_dict(project: Project) -> Dict[str, Any]:
+    """Convert a Project model to a dictionary for JSON serialization."""
+    return {
+        "id": str(project.id),
+        "user_id": str(project.user_id),
+        "name": project.name,
+        "description": project.description or "",
+        "github_repo": project.github_repo or "",
+        "prompt": project.prompt,
+        "status": project.status,
+        "mermaid_chart": project.mermaid_chart,
+        "created_at": project.created_at.isoformat(),
+        "updated_at": project.updated_at.isoformat(),
+    }
+
+
+def _create_stream_response(response_type: str, **kwargs) -> bytes:
+    """Create a JSON stream response with proper encoding."""
+    return json.dumps({"type": response_type, **kwargs}).encode("utf-8") + b"\n"
+
+
+def _get_project_by_id(project_id: uuid.UUID, db: Session) -> Project:
+    """Get a project by ID, raising 404 if not found."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+def _get_project_plans(project_id: uuid.UUID, db: Session) -> List[Plan]:
+    """Get all plans for a project."""
+    return db.query(Plan).filter(Plan.project_id == project_id).all()
+
+
+def _get_project_workflows(project_id: uuid.UUID, db: Session) -> List[Workflow]:
+    """Get all workflows for a project."""
+    return db.query(Workflow).filter(Workflow.project_id == project_id).all()
+
+
+def _get_project_agent_calls(project_id: uuid.UUID, db: Session) -> List[AgentCall]:
+    """Get all agent calls for a project, ordered by creation time."""
+    return (
+        db.query(AgentCall)
+        .filter(AgentCall.project_id == project_id)
+        .order_by(AgentCall.created_at)
+        .all()
+    )
+
+
 @router.post("/")
 async def create_project(
     request: ProjectCreate,
@@ -53,16 +108,11 @@ async def create_project(
             db.refresh(project)
 
             # Stream project creation confirmation
-            yield (
-                json.dumps(
-                    {
-                        "type": "project_created",
-                        "project_id": str(project.id),
-                        "status": "loading",
-                        "message": "Project created successfully. Starting workflow generation...",
-                    }
-                ).encode("utf-8")
-                + b"\n"
+            yield _create_stream_response(
+                "project_created",
+                project_id=str(project.id),
+                status="loading",
+                message="Project created successfully. Starting workflow generation...",
             )
 
             # Initialize the workflow agent
@@ -72,25 +122,14 @@ async def create_project(
             initial_chat_history = [{"role": "user", "content": request.prompt}]
 
             # Stream agent initialization
-            yield (
-                json.dumps(
-                    {
-                        "type": "agent_initialized",
-                        "message": "AI agent initialized and analyzing your requirements...",
-                    }
-                ).encode("utf-8")
-                + b"\n"
+            yield _create_stream_response(
+                "agent_initialized",
+                message="AI agent initialized and analyzing your requirements...",
             )
 
             # Stream planning phase
-            yield (
-                json.dumps(
-                    {
-                        "type": "planning_started",
-                        "message": "Creating comprehensive project plan...",
-                    }
-                ).encode("utf-8")
-                + b"\n"
+            yield _create_stream_response(
+                "planning_started", message="Creating comprehensive project plan..."
             )
 
             # Use the new workflow system to create a plan
@@ -108,44 +147,22 @@ async def create_project(
                 # Check if the workflow completed successfully
                 if result.get("completed", False) and result.get("output"):
                     # Workflow completed successfully
-                    yield (
-                        json.dumps(
-                            {
-                                "type": "workflow_completed",
-                                "message": "Workflow generation completed successfully!",
-                            }
-                        ).encode("utf-8")
-                        + b"\n"
+                    yield _create_stream_response(
+                        "workflow_completed",
+                        message="Workflow generation completed successfully!",
                     )
 
                     # Update project status to completed
-                    project.status = "completed"
-                    db.commit()
+                    _update_project_status(project, "completed", db)
 
                     # Get the updated project with mermaid chart
                     db.refresh(project)
 
                     # Send the completed project with mermaid chart
-                    yield (
-                        json.dumps(
-                            {
-                                "type": "project_completed",
-                                "message": "Project completed successfully!",
-                                "project": {
-                                    "id": str(project.id),
-                                    "user_id": str(project.user_id),
-                                    "name": project.name,
-                                    "description": project.description or "",
-                                    "github_repo": project.github_repo or "",
-                                    "prompt": project.prompt,
-                                    "status": project.status,
-                                    "mermaid_chart": project.mermaid_chart,
-                                    "created_at": project.created_at.isoformat(),
-                                    "updated_at": project.updated_at.isoformat(),
-                                },
-                            }
-                        ).encode("utf-8")
-                        + b"\n"
+                    yield _create_stream_response(
+                        "project_completed",
+                        message="Project completed successfully!",
+                        project=_project_to_dict(project),
                     )
 
                 elif result.get("waiting_for_input", False):
@@ -158,187 +175,89 @@ async def create_project(
                         "The AI agent needs more information to complete your plan.",
                     )
 
-                    yield (
-                        json.dumps(
-                            {
-                                "type": "follow_up_needed",
-                                "message": message,
-                                "details": followup_question,
-                                "action_required": "Please use the chat endpoint to answer the follow-up question.",
-                            }
-                        ).encode("utf-8")
-                        + b"\n"
+                    yield _create_stream_response(
+                        "follow_up_needed",
+                        message=message,
+                        details=followup_question,
+                        action_required="Please use the chat endpoint to answer the follow-up question.",
                     )
 
                     # Update project status to indicate follow-up is needed
-                    project.status = "needs_input"
-                    db.commit()
+                    _update_project_status(project, "needs_input", db)
 
-                    yield (
-                        json.dumps(
-                            {
-                                "type": "project_paused",
-                                "project": {
-                                    "id": str(project.id),
-                                    "user_id": str(project.user_id),
-                                    "name": project.name,
-                                    "description": project.description or "",
-                                    "github_repo": project.github_repo or "",
-                                    "prompt": project.prompt,
-                                    "status": project.status,
-                                    "mermaid_chart": project.mermaid_chart,
-                                    "created_at": project.created_at.isoformat(),
-                                    "updated_at": project.updated_at.isoformat(),
-                                },
-                                "message": "Project paused. Use the chat endpoint to provide additional information.",
-                                "followup_question": followup_question,
-                            }
-                        ).encode("utf-8")
-                        + b"\n"
+                    yield _create_stream_response(
+                        "project_paused",
+                        project=_project_to_dict(project),
+                        message="Project paused. Use the chat endpoint to provide additional information.",
+                        followup_question=followup_question,
                     )
                     return
 
                 else:
                     # Workflow needs more input but no specific question
-                    yield (
-                        json.dumps(
-                            {
-                                "type": "follow_up_needed",
-                                "message": "The AI agent needs more information to complete your plan.",
-                                "details": "Please use the chat endpoint to answer follow-up questions.",
-                                "action_required": "Please use the chat endpoint to answer follow-up questions.",
-                            }
-                        ).encode("utf-8")
-                        + b"\n"
+                    yield _create_stream_response(
+                        "follow_up_needed",
+                        message="The AI agent needs more information to complete your plan.",
+                        details="Please use the chat endpoint to answer follow-up questions.",
+                        action_required="Please use the chat endpoint to answer follow-up questions.",
                     )
 
                     # Update project status to indicate follow-up is needed
-                    project.status = "needs_input"
-                    db.commit()
+                    _update_project_status(project, "needs_input", db)
 
-                    yield (
-                        json.dumps(
-                            {
-                                "type": "project_paused",
-                                "project": {
-                                    "id": str(project.id),
-                                    "user_id": str(project.user_id),
-                                    "name": project.name,
-                                    "description": project.description or "",
-                                    "github_repo": project.github_repo or "",
-                                    "prompt": project.prompt,
-                                    "status": project.status,
-                                    "mermaid_chart": project.mermaid_chart,
-                                    "created_at": project.created_at.isoformat(),
-                                    "updated_at": project.updated_at.isoformat(),
-                                },
-                                "message": "Project paused. Use the chat endpoint to provide additional information.",
-                            }
-                        ).encode("utf-8")
-                        + b"\n"
+                    yield _create_stream_response(
+                        "project_paused",
+                        project=_project_to_dict(project),
+                        message="Project paused. Use the chat endpoint to provide additional information.",
                     )
                     return
 
             except Exception as workflow_error:
                 logger.error(f"Workflow execution error: {workflow_error}")
                 # If workflow fails, fall back to needs_input status
-                project.status = "needs_input"
-                db.commit()
+                _update_project_status(project, "needs_input", db)
 
-                yield (
-                    json.dumps(
-                        {
-                            "type": "follow_up_needed",
-                            "message": "Initial plan creation encountered issues. Please provide more details.",
-                            "details": str(workflow_error),
-                            "action_required": "Please use the chat endpoint to provide additional information.",
-                        }
-                    ).encode("utf-8")
-                    + b"\n"
+                yield _create_stream_response(
+                    "follow_up_needed",
+                    message="Initial plan creation encountered issues. Please provide more details.",
+                    details=str(workflow_error),
+                    action_required="Please use the chat endpoint to provide additional information.",
                 )
 
-                yield (
-                    json.dumps(
-                        {
-                            "type": "project_paused",
-                            "project": {
-                                "id": str(project.id),
-                                "user_id": str(project.user_id),
-                                "name": project.name,
-                                "description": project.description or "",
-                                "github_repo": project.github_repo or "",
-                                "prompt": project.prompt,
-                                "status": project.status,
-                                "mermaid_chart": project.mermaid_chart,
-                                "created_at": project.created_at.isoformat(),
-                                "updated_at": project.updated_at.isoformat(),
-                            },
-                            "message": "Project paused. Use the chat endpoint to provide additional information.",
-                        }
-                    ).encode("utf-8")
-                    + b"\n"
+                yield _create_stream_response(
+                    "project_paused",
+                    project=_project_to_dict(project),
+                    message="Project paused. Use the chat endpoint to provide additional information.",
                 )
                 return
 
             # Verify the results were created
-            plans = db.query(Plan).filter(Plan.project_id == project.id).all()
-            workflows = (
-                db.query(Workflow).filter(Workflow.project_id == project.id).all()
-            )
+            plans = _get_project_plans(project.id, db)
+            workflows = _get_project_workflows(project.id, db)
 
             if not plans or not workflows:
-                yield (
-                    json.dumps(
-                        {
-                            "type": "warning",
-                            "message": "Warning: Agent didn't create plans/workflows for project",
-                        }
-                    ).encode("utf-8")
-                    + b"\n"
+                yield _create_stream_response(
+                    "warning",
+                    message="Warning: Agent didn't create plans/workflows for project",
                 )
 
-            db.commit()
-
             # Stream final project details
-            yield (
-                json.dumps(
-                    {
-                        "type": "project_completed",
-                        "project": {
-                            "id": str(project.id),
-                            "user_id": str(project.user_id),
-                            "name": project.name,
-                            "description": project.description or "",
-                            "github_repo": project.github_repo or "",
-                            "prompt": project.prompt,
-                            "status": project.status,
-                            "mermaid_chart": project.mermaid_chart,
-                            "created_at": project.created_at.isoformat(),
-                            "updated_at": project.updated_at.isoformat(),
-                        },
-                        "message": "Project setup complete! Your workflow is ready.",
-                    }
-                ).encode("utf-8")
-                + b"\n"
+            yield _create_stream_response(
+                "project_completed",
+                project=_project_to_dict(project),
+                message="Project setup complete! Your workflow is ready.",
             )
 
         except Exception as e:
             # Stream error information
-            yield (
-                json.dumps(
-                    {
-                        "type": "error",
-                        "message": f"Error during workflow generation: {str(e)}",
-                    }
-                ).encode("utf-8")
-                + b"\n"
+            yield _create_stream_response(
+                "error", message=f"Error during workflow generation: {str(e)}"
             )
 
             # Update project status to failed if we have a project
             try:
                 if "project" in locals():
-                    project.status = "failed"
-                    db.commit()
+                    _update_project_status(project, "failed", db)
             except:
                 pass
 
@@ -356,17 +275,10 @@ async def chat_with_project(
     """Send a message to the project's AI agent and get a response"""
     try:
         # Get the project
-        project = db.query(Project).filter(Project.id == project_id).first()
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
+        project = _get_project_by_id(project_id, db)
 
         # Get existing chat history from AgentCall
-        agent_calls = (
-            db.query(AgentCall)
-            .filter(AgentCall.project_id == project_id)
-            .order_by(AgentCall.created_at)
-            .all()
-        )
+        agent_calls = _get_project_agent_calls(project_id, db)
 
         # Build chat history
         chat_history = []
@@ -397,8 +309,7 @@ async def chat_with_project(
                     agent_response = "Great! I have enough information now. You can use the resume endpoint to complete your workflow generation."
 
                     # Update project status to indicate we're ready to complete
-                    project.status = "ready_to_complete"
-                    db.commit()
+                    _update_project_status(project, "ready_to_complete", db)
                 else:
                     agent_response = "I'm still processing your response. Please provide more details if needed."
 
@@ -418,8 +329,7 @@ async def chat_with_project(
 
                     # Check if we should update project status
                     if project.status == "needs_input":
-                        project.status = "ready_to_complete"
-                        db.commit()
+                        _update_project_status(project, "ready_to_complete", db)
                 else:
                     # Workflow still needs more input
                     agent_response = "I'm still gathering information. Please provide more details about your project requirements."
@@ -440,7 +350,11 @@ async def chat_with_project(
         db.commit()
 
         # Check if there's an existing plan
-        existing_plan = db.query(Plan).filter(Plan.project_id == project_id).first()
+        existing_plan = (
+            _get_project_plans(project_id, db)[0]
+            if _get_project_plans(project_id, db)
+            else None
+        )
 
         return ChatResponse(
             response=agent_response,
@@ -461,43 +375,26 @@ async def resume_workflow_generation(
     async def stream_workflow_resumption() -> AsyncIterator[bytes]:
         try:
             # Get the project
-            project = db.query(Project).filter(Project.id == project_id).first()
-            if not project:
-                raise HTTPException(status_code=404, detail="Project not found")
+            project = _get_project_by_id(project_id, db)
 
             if project.status not in ["needs_input", "ready_to_complete"]:
-                yield (
-                    json.dumps(
-                        {
-                            "type": "error",
-                            "message": f"Project is not ready for resumption. Current status: {project.status}",
-                        }
-                    ).encode("utf-8")
-                    + b"\n"
+                yield _create_stream_response(
+                    "error",
+                    message=f"Project is not ready for resumption. Current status: {project.status}",
                 )
                 return
 
             # Stream resumption start
-            yield (
-                json.dumps(
-                    {
-                        "type": "resumption_started",
-                        "message": "Resuming workflow generation with updated information...",
-                    }
-                ).encode("utf-8")
-                + b"\n"
+            yield _create_stream_response(
+                "resumption_started",
+                message="Resuming workflow generation with updated information...",
             )
 
             # Initialize the workflow agent
             agent = WorkflowAgent(settings)
 
             # Get updated chat history from AgentCall
-            agent_calls = (
-                db.query(AgentCall)
-                .filter(AgentCall.project_id == project_id)
-                .order_by(AgentCall.created_at)
-                .all()
-            )
+            agent_calls = _get_project_agent_calls(project_id, db)
 
             # Build updated chat history
             updated_chat_history = []
@@ -508,14 +405,9 @@ async def resume_workflow_generation(
                 )
 
             # Stream planning phase
-            yield (
-                json.dumps(
-                    {
-                        "type": "planning_resumed",
-                        "message": "Creating comprehensive project plan with new information...",
-                    }
-                ).encode("utf-8")
-                + b"\n"
+            yield _create_stream_response(
+                "planning_resumed",
+                message="Creating comprehensive project plan with new information...",
             )
 
             # Use the new workflow system to complete the plan
@@ -543,63 +435,40 @@ async def resume_workflow_generation(
                 # Check if the workflow completed successfully
                 if result.get("completed", False) and result.get("output"):
                     # Workflow completed successfully
-                    yield (
-                        json.dumps(
-                            {
-                                "type": "workflow_completed",
-                                "message": "Workflow generation completed successfully!",
-                            }
-                        ).encode("utf-8")
-                        + b"\n"
+                    yield _create_stream_response(
+                        "workflow_completed",
+                        message="Workflow generation completed successfully!",
                     )
 
                     # Update project status to completed
-                    project.status = "completed"
-                    db.commit()
+                    _update_project_status(project, "completed", db)
 
                 else:
                     # Workflow still needs more input
-                    yield (
-                        json.dumps(
-                            {
-                                "type": "follow_up_still_needed",
-                                "message": "The AI agent still needs more information to complete your plan.",
-                                "details": "Please continue using the chat endpoint to provide more details.",
-                                "action_required": "Please continue using the chat endpoint to provide more details.",
-                            }
-                        ).encode("utf-8")
-                        + b"\n"
+                    yield _create_stream_response(
+                        "follow_up_still_needed",
+                        message="The AI agent still needs more information to complete your plan.",
+                        details="Please continue using the chat endpoint to provide more details.",
+                        action_required="Please continue using the chat endpoint to provide more details.",
                     )
                     return
 
             except Exception as workflow_error:
                 logger.error(f"Workflow execution error in resume: {workflow_error}")
-                yield (
-                    json.dumps(
-                        {
-                            "type": "error",
-                            "message": f"Error during workflow resumption: {str(workflow_error)}",
-                        }
-                    ).encode("utf-8")
-                    + b"\n"
+                yield _create_stream_response(
+                    "error",
+                    message=f"Error during workflow resumption: {str(workflow_error)}",
                 )
                 return
 
             # Verify the results were created
-            plans = db.query(Plan).filter(Plan.project_id == project.id).all()
-            workflows = (
-                db.query(Workflow).filter(Workflow.project_id == project.id).all()
-            )
+            plans = _get_project_plans(project.id, db)
+            workflows = _get_project_workflows(project.id, db)
 
             if not plans or not workflows:
-                yield (
-                    json.dumps(
-                        {
-                            "type": "warning",
-                            "message": "Warning: Agent didn't create plans/workflows for project",
-                        }
-                    ).encode("utf-8")
-                    + b"\n"
+                yield _create_stream_response(
+                    "warning",
+                    message="Warning: Agent didn't create plans/workflows for project",
                 )
 
             # Generate Mermaid chart if not already present
@@ -612,45 +481,22 @@ async def resume_workflow_generation(
             db.commit()
 
             # Stream final project details
-            yield (
-                json.dumps(
-                    {
-                        "type": "project_completed",
-                        "project": {
-                            "id": str(project.id),
-                            "user_id": str(project.user_id),
-                            "name": project.name,
-                            "description": project.description or "",
-                            "github_repo": project.github_repo or "",
-                            "prompt": project.prompt,
-                            "status": project.status,
-                            "mermaid_chart": project.mermaid_chart,
-                            "created_at": project.created_at.isoformat(),
-                            "updated_at": project.updated_at.isoformat(),
-                        },
-                        "message": "Project setup complete! Your workflow is ready.",
-                    }
-                ).encode("utf-8")
-                + b"\n"
+            yield _create_stream_response(
+                "project_completed",
+                project=_project_to_dict(project),
+                message="Project setup complete! Your workflow is ready.",
             )
 
         except Exception as e:
             # Stream error information
-            yield (
-                json.dumps(
-                    {
-                        "type": "error",
-                        "message": f"Error during workflow resumption: {str(e)}",
-                    }
-                ).encode("utf-8")
-                + b"\n"
+            yield _create_stream_response(
+                "error", message=f"Error during workflow resumption: {str(e)}"
             )
 
             # Update project status to failed if we have a project
             try:
                 if "project" in locals():
-                    project.status = "failed"
-                    db.commit()
+                    _update_project_status(project, "failed", db)
             except:
                 pass
 
@@ -669,17 +515,10 @@ async def get_project_chat_history(
     """Get the chat history for a project"""
     try:
         # Get the project
-        project = db.query(Project).filter(Project.id == project_id).first()
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
+        project = _get_project_by_id(project_id, db)
 
         # Get chat history from AgentCall
-        agent_calls = (
-            db.query(AgentCall)
-            .filter(AgentCall.project_id == project_id)
-            .order_by(AgentCall.created_at)
-            .all()
-        )
+        agent_calls = _get_project_agent_calls(project_id, db)
 
         # Format chat history
         chat_history = []
@@ -718,17 +557,10 @@ async def get_project_plan(project_id: uuid.UUID, db: Session = Depends(get_db))
     """Get the current plan for a project"""
     try:
         # Get the project
-        project = db.query(Project).filter(Project.id == project_id).first()
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
+        project = _get_project_by_id(project_id, db)
 
         # Get plan details directly from database
-        plans = (
-            db.query(Plan)
-            .filter(Plan.project_id == project_id)
-            .order_by(Plan.step_id)
-            .all()
-        )
+        plans = _get_project_plans(project_id, db)
 
         plan_summary = (
             {
@@ -748,12 +580,7 @@ async def get_project_plan(project_id: uuid.UUID, db: Session = Depends(get_db))
         )
 
         # Get workflow details directly from database
-        workflows = (
-            db.query(Workflow)
-            .filter(Workflow.project_id == project_id)
-            .order_by(Workflow.created_at.desc())
-            .all()
-        )
+        workflows = _get_project_workflows(project_id, db)
 
         workflow_summary = (
             {
@@ -798,7 +625,9 @@ async def list_projects(db: Session = Depends(get_db)):
     try:
         # For now, we'll get all projects
         # In a real app, this would filter by authenticated user
-        projects = db.query(Project).all()
+        projects = db.query(
+            Project
+        ).all()  # This one is different - getting all projects
 
         return [
             ProjectResponse(
@@ -826,10 +655,7 @@ async def list_projects(db: Session = Depends(get_db)):
 async def get_project(project_id: uuid.UUID, db: Session = Depends(get_db)):
     """Get a project by ID"""
     try:
-        project = db.query(Project).filter(Project.id == project_id).first()
-
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
+        project = _get_project_by_id(project_id, db)
 
         return ProjectResponse(
             id=project.id,
@@ -858,10 +684,7 @@ async def update_project(
 ):
     """Update a project"""
     try:
-        project = db.query(Project).filter(Project.id == project_id).first()
-
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
+        project = _get_project_by_id(project_id, db)
 
         # Update only provided fields
         if request.name is not None:
@@ -904,10 +727,7 @@ async def update_project(
 async def delete_project(project_id: uuid.UUID, db: Session = Depends(get_db)):
     """Delete a project"""
     try:
-        project = db.query(Project).filter(Project.id == project_id).first()
-
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
+        project = _get_project_by_id(project_id, db)
 
         db.delete(project)
         db.commit()

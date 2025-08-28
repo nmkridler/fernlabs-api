@@ -111,28 +111,3 @@ class WorkflowResponse(WorkflowBase):
 
     class Config:
         from_attributes = True
-
-
-class WorkflowExecutionRequest(BaseModel):
-    """Schema for requesting workflow execution"""
-
-    workflow_id: uuid.UUID
-    initial_state: Optional[Dict[str, Any]] = None
-    artifacts: Optional[List[uuid.UUID]] = None
-
-
-class WorkflowExecutionResponse(BaseModel):
-    """Schema for workflow execution response"""
-
-    execution_id: str
-    workflow_id: uuid.UUID
-    status: str
-    current_state: Optional[Dict[str, Any]] = None
-    started_at: datetime
-    completed_at: Optional[datetime] = None
-    results: Optional[Dict[str, Any]] = None
-    logs: Optional[str] = None
-    error_message: Optional[str] = None
-
-    class Config:
-        from_attributes = True
