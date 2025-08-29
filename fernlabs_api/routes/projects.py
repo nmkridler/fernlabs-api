@@ -20,7 +20,7 @@ from fernlabs_api.schema.chat import (
 )
 from fernlabs_api.db import get_db
 from fernlabs_api.db.model import Project, User, AgentCall, Plan, Workflow
-from fernlabs_api.workflow.generator import WorkflowAgent
+from fernlabs_api.workflow.workflow_agent import WorkflowAgent
 from fernlabs_api.settings import APISettings
 
 router = APIRouter()

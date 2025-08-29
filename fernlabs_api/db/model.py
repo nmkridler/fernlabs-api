@@ -83,6 +83,7 @@ class Project(Base):
     workflows = relationship("Workflow", back_populates="project")
     plans = relationship("Plan", back_populates="project")
     agent_calls = relationship("AgentCall", back_populates="project")
+    plan_connections = relationship("PlanConnection", back_populates="project")
 
 
 class Workflow(Base):
@@ -141,6 +142,10 @@ class Plan(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"))
     step_id = Column("step_id", Integer, nullable=False)  # Ordering of plan steps
     text = Column("text", Text, nullable=False)  # Plan step content
+    step_type = Column(
+        "step_type", String(100), default="task"
+    )  # task, decision, loop_start, loop_end
+    condition = Column("condition", Text)  # Condition for decision points
     created_at = Column(
         "created_at",
         DateTime,
@@ -159,6 +164,48 @@ class Plan(Base):
     # Relationships
     user = relationship("User", back_populates="plans")
     project = relationship("Project", back_populates="plans")
+    outgoing_connections = relationship(
+        "PlanConnection",
+        foreign_keys="PlanConnection.source_step_id",
+        back_populates="source_step",
+    )
+    incoming_connections = relationship(
+        "PlanConnection",
+        foreign_keys="PlanConnection.target_step_id",
+        back_populates="target_step",
+    )
+
+
+class PlanConnection(Base):
+    """Model for storing connections between plan steps"""
+
+    __tablename__ = "plan_connections"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"))
+    source_step_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plans.id"))
+    target_step_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("plans.id"))
+    connection_type = Column(
+        "connection_type", String(100), default="next"
+    )  # next, conditional, loop_back
+    condition = Column("condition", Text)  # Condition for conditional connections
+    label = Column("label", String(255))  # Human-readable label for the connection
+    created_at = Column(
+        "created_at",
+        DateTime,
+        default=datetime.now(UTC),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    # Relationships
+    project = relationship("Project", back_populates="plan_connections")
+    source_step = relationship(
+        "Plan", foreign_keys=[source_step_id], back_populates="outgoing_connections"
+    )
+    target_step = relationship(
+        "Plan", foreign_keys=[target_step_id], back_populates="incoming_connections"
+    )
 
 
 class AgentCall(Base):

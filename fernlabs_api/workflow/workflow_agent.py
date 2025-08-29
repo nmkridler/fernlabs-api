@@ -15,6 +15,7 @@ from fernlabs_api.workflow.nodes import (
     AssessPlan,
     WaitForUserInput,
     EditPlan,
+    ExecutePlanStep,
 )
 from fernlabs_api.workflow.base import WorkflowState, WorkflowDependencies
 
@@ -22,7 +23,8 @@ logger.add("async_log.log", enqueue=True)
 
 # Create the workflow graph
 workflow_graph = Graph(
-    nodes=[CreatePlan, AssessPlan, WaitForUserInput, EditPlan], state_type=WorkflowState
+    nodes=[CreatePlan, AssessPlan, WaitForUserInput, EditPlan, ExecutePlanStep],
+    state_type=WorkflowState,
 )
 
 
@@ -149,6 +151,73 @@ class WorkflowAgent:
             else:
                 # Some other error occurred
                 raise e
+
+    async def execute_workflow_dynamically(
+        self,
+        user_id: uuid.UUID,
+        project_id: uuid.UUID,
+        chat_history: List[Dict[str, str]],
+        db: Session,
+        start_from_step: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Execute a workflow dynamically based on plan connections, allowing for non-linear paths"""
+
+        # Initialize workflow state
+        initial_state = WorkflowState(
+            user_id=user_id,
+            project_id=project_id,
+            chat_history=chat_history,
+            db=db,
+            current_step_id=start_from_step or 1,
+        )
+
+        # Initialize dependencies
+        deps = WorkflowDependencies(settings=self.settings, db=db)
+
+        try:
+            # Start from ExecutePlanStep for dynamic execution
+            result = await self.graph.run(
+                ExecutePlanStep(), state=initial_state, deps=deps
+            )
+
+            # Check if the workflow ended with waiting_for_input status
+            if (
+                hasattr(result, "output")
+                and result.output
+                and isinstance(result.output, dict)
+                and result.output.get("status") == "waiting_for_input"
+            ):
+                return {
+                    "output": None,
+                    "final_state": result.state,
+                    "history": chat_history,
+                    "completed": False,
+                    "waiting_for_input": True,
+                    "followup_question": result.output.get("followup_question"),
+                    "message": result.output.get("message"),
+                    "workflow_paused": True,
+                    "execution_path": result.state.execution_path
+                    if result.state
+                    else [],
+                }
+
+            # Get the execution results
+            execution_path = result.state.execution_path if result.state else []
+            mermaid_chart = result.state.mermaid_chart if result.state else None
+
+            return {
+                "output": result.output,
+                "final_state": result.state,
+                "history": chat_history,
+                "completed": True,
+                "mermaid_chart": mermaid_chart,
+                "execution_path": execution_path,
+                "execution_type": "dynamic",
+            }
+
+        except Exception as e:
+            logger.error(f"Dynamic workflow execution error: {e}")
+            raise e
 
     def generate_mermaid_diagram(
         self,

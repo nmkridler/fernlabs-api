@@ -14,27 +14,10 @@ from unittest.mock import Mock, AsyncMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fernlabs_api.settings import APISettings
-from fernlabs_api.workflow.generator import PlanResponse
+from fernlabs_api.workflow.base import PlanResponse
 
-# Patch the provider factory at module level for testing
-from unittest.mock import patch
-from fernlabs_api.workflow.generator import _provider_factory
-
-
-def mock_provider_factory(provider_name: str, api_key: str):
-    """Mock provider factory for testing"""
-    from unittest.mock import Mock
-
-    mock_provider = Mock()
-    mock_provider.__class__.__name__ = "MockProvider"
-    return mock_provider
-
-
-# Apply the patch
-patcher = patch(
-    "fernlabs_api.workflow.generator._provider_factory", mock_provider_factory
-)
-patcher.start()
+# Note: _provider_factory is not available in the current generator module
+# Mocking will be handled in individual test files as needed
 
 
 class MockDatabaseSession:
@@ -138,7 +121,27 @@ def test_settings():
 @pytest.fixture
 def mock_db():
     """Fixture providing a mock database session"""
-    return MockDatabaseSession()
+    from unittest.mock import Mock
+    from sqlalchemy.orm import Session
+
+    # Create a simple subclass of Session for testing
+    class TestSession(Session):
+        def __init__(self):
+            # Don't call super().__init__() to avoid database connection issues
+            pass
+
+        def add(self, obj):
+            pass
+
+        def commit(self):
+            pass
+
+        def query(self, *args):
+            mock_query = Mock()
+            mock_query.filter.return_value.first.return_value = Mock()
+            return mock_query
+
+    return TestSession()
 
 
 @pytest.fixture
@@ -165,28 +168,9 @@ def mock_provider():
 @pytest.fixture
 def mock_workflow_agent(test_settings):
     """Fixture providing a WorkflowAgent with mocked AI"""
-    with patch("fernlabs_api.workflow.generator.Agent") as mock_agent_class:
-        mock_agent = Mock()
-        mock_agent.run = AsyncMock()
+    from fernlabs_api.workflow.workflow_agent import WorkflowAgent
 
-        # Mock the tools
-        mock_agent.tool = Mock()
-
-        # Mock agent responses
-        mock_agent.run.return_value = MockAIResponse(
-            PlanResponse(
-                plan="1. Data Collection\n2. Data Cleaning\n3. Data Processing\n4. Results Analysis",
-                summary="A comprehensive data processing workflow",
-                key_phases=["Collection", "Cleaning", "Processing", "Analysis"],
-                estimated_duration="2-3 weeks",
-            )
-        )
-
-        mock_agent_class.return_value = mock_agent
-
-        from fernlabs_api.workflow.generator import WorkflowAgent
-
-        return WorkflowAgent(test_settings)
+    return WorkflowAgent(test_settings)
 
 
 # Pytest configuration

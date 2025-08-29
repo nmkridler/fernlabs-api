@@ -41,6 +41,9 @@ class PlanResponse(BaseModel):
     """Response containing the created or edited plan"""
 
     plan: str
+    connections: List[
+        Dict[str, Any]
+    ]  # List of connection objects with source, target, type, condition
     mermaid_chart: str
 
 
@@ -56,6 +59,8 @@ class WorkflowState(BaseModel):
     followup_question: Optional[str] = None
     user_response: Optional[str] = None
     final_plan: Optional[PlanResponse] = None
+    current_step_id: Optional[int] = None  # Track current execution step
+    execution_path: List[int] = field(default_factory=list)  # Track execution path
     db: Any = None
 
     model_config = {"arbitrary_types_allowed": True}
@@ -107,6 +112,221 @@ def _parse_plan_into_steps(plan_text: str) -> List[str]:
         steps = [step.strip() for step in plan_text.split("\n\n") if step.strip()]
 
     return steps
+
+
+def _parse_connections_from_plan(plan_text: str) -> List[Dict[str, Any]]:
+    """Parse connections from the plan text, looking for indicators of loops, conditionals, etc."""
+    connections = []
+    lines = [line.strip() for line in plan_text.split("\n") if line.strip()]
+
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+
+        # Look for loop indicators - more flexible pattern matching
+        if any(
+            keyword in line_lower
+            for keyword in [
+                "loop back",
+                "loop to",
+                "repeat",
+                "iterate",
+                "while",
+                "for each",
+            ]
+        ):
+            # Look for the target step (usually mentioned in the same line)
+            # For example: "loop back to transformation" -> find step with "transformation"
+            target_keywords = []
+            if "loop back to" in line_lower:
+                target_keywords = line_lower.split("loop back to")[1].strip().split()
+            elif "loop to" in line_lower:
+                target_keywords = line_lower.split("loop to")[1].strip().split()
+
+            # Find the target step by looking for steps containing these keywords
+            for j, target_line in enumerate(lines):
+                if j != i and any(
+                    keyword in target_line.lower() for keyword in target_keywords
+                ):
+                    connections.append(
+                        {
+                            "source": i + 1,
+                            "target": j + 1,
+                            "type": "loop_back",
+                            "condition": "loop condition",
+                            "label": "Loop back",
+                        }
+                    )
+                    break
+
+        # Look for conditional indicators - more flexible pattern matching
+        if any(
+            keyword in line_lower
+            for keyword in ["if", "when", "check", "verify", "validate"]
+        ):
+            # Look for the next step that might be the "else" branch
+            # For now, we'll create a conditional connection to the next step
+            # and let the user specify the actual branching logic
+            if i + 1 < len(lines):
+                connections.append(
+                    {
+                        "source": i + 1,
+                        "target": i + 2,
+                        "type": "conditional",
+                        "condition": "condition met",
+                        "label": "Yes",
+                    }
+                )
+                # Add a "No" branch to the step after next (if it exists)
+                if i + 2 < len(lines):
+                    connections.append(
+                        {
+                            "source": i + 1,
+                            "target": i + 3,
+                            "type": "conditional",
+                            "condition": "condition not met",
+                            "label": "No",
+                        }
+                    )
+
+    # Add default sequential connections for steps without explicit connections
+    for i in range(1, len(lines)):
+        if not any(conn["source"] == i for conn in connections):
+            connections.append(
+                {
+                    "source": i,
+                    "target": i + 1,
+                    "type": "next",
+                    "condition": None,
+                    "label": "Next",
+                }
+            )
+
+    return connections
+
+
+def _generate_plan_mermaid_chart_with_connections(
+    plan_steps: List[str], connections: List[Dict[str, Any]]
+) -> str:
+    """
+    Generate a Mermaid flowchart that shows the actual connections between steps,
+    including loops, conditionals, and other non-linear flows.
+    """
+    if not plan_steps:
+        return "flowchart TD\n    A[No Plan Available]"
+
+    mermaid_lines = ["flowchart TD"]
+
+    # Add nodes
+    for i, step in enumerate(plan_steps, 1):
+        node_id = f"S{i}"
+        # Truncate long descriptions for readability
+        label = step[:50] + "..." if len(step) > 50 else step
+        # Escape quotes and special characters
+        label = label.replace('"', '\\"').replace("'", "\\'")
+        mermaid_lines.append(f'    {node_id}["{label}"]')
+
+    # Add edges with different styles based on connection type
+    for conn in connections:
+        source = f"S{conn['source']}"
+        target = f"S{conn['target']}"
+
+        if conn["type"] == "loop_back":
+            mermaid_lines.append(
+                f"    {source} -.-> {target} : {conn.get('label', 'Loop')}"
+            )
+        elif conn["type"] == "conditional":
+            condition = conn.get("label", "Condition")
+            mermaid_lines.append(f"    {source} -->|{condition}| {target}")
+        else:
+            mermaid_lines.append(f"    {source} --> {target}")
+
+    return "\n".join(mermaid_lines)
+
+
+def _save_plan_connections_to_db(
+    db: Session,
+    project_id: uuid.UUID,
+    connections: List[Dict[str, Any]],
+    plan_steps: List[str],
+):
+    """Save plan connections to the database"""
+    from fernlabs_api.db.model import PlanConnection, Plan
+
+    # First, get the plan steps from the database to map step_id to UUID
+    plan_entries = (
+        db.query(Plan)
+        .filter(Plan.project_id == project_id)
+        .order_by(Plan.step_id)
+        .all()
+    )
+
+    if len(plan_entries) != len(plan_steps):
+        # Something went wrong with the plan creation
+        return
+
+    # Create a mapping from step_id to plan UUID
+    step_to_uuid = {plan.step_id: plan.id for plan in plan_entries}
+
+    # Save connections
+    for conn in connections:
+        source_uuid = step_to_uuid.get(conn["source"])
+        target_uuid = step_to_uuid.get(conn["target"])
+
+        if source_uuid and target_uuid:
+            connection = PlanConnection(
+                id=uuid.uuid4(),
+                project_id=project_id,
+                source_step_id=source_uuid,
+                target_step_id=target_uuid,
+                connection_type=conn["type"],
+                condition=conn.get("condition"),
+                label=conn.get("label"),
+            )
+            db.add(connection)
+
+    db.commit()
+
+
+def _get_next_execution_steps(
+    db: Session, project_id: uuid.UUID, current_step_id: int
+) -> List[Dict[str, Any]]:
+    """Get the next possible execution steps based on current step and connections"""
+    from fernlabs_api.db.model import PlanConnection, Plan
+
+    # Get all outgoing connections from the current step
+    current_plan = (
+        db.query(Plan)
+        .filter(Plan.project_id == project_id, Plan.step_id == current_step_id)
+        .first()
+    )
+
+    if not current_plan:
+        return []
+
+    connections = (
+        db.query(PlanConnection)
+        .filter(
+            PlanConnection.project_id == project_id,
+            PlanConnection.source_step_id == current_plan.id,
+        )
+        .all()
+    )
+
+    next_steps = []
+    for conn in connections:
+        target_plan = db.query(Plan).filter(Plan.id == conn.target_step_id).first()
+        if target_plan:
+            next_steps.append(
+                {
+                    "step_id": target_plan.step_id,
+                    "text": target_plan.text,
+                    "connection_type": conn.connection_type,
+                    "condition": conn.condition,
+                    "label": conn.label,
+                }
+            )
+
+    return next_steps
 
 
 def _generate_plan_mermaid_chart(plan_steps: List[str]) -> str:

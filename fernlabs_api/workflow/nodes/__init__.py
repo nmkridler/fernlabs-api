@@ -1,10 +1,20 @@
 """
 Workflow node classes for the AI-powered workflow system.
+Exports classes from the centralized `nodes.py` file.
 """
 
-from fernlabs_api.workflow.nodes.create_plan import CreatePlan
-from fernlabs_api.workflow.nodes.assess_plan import AssessPlan
-from fernlabs_api.workflow.nodes.wait_for_user_input import WaitForUserInput
-from fernlabs_api.workflow.nodes.edit_plan import EditPlan
+from fernlabs_api.workflow.nodes.nodes import (
+    CreatePlan,
+    AssessPlan,
+    WaitForUserInput,
+    EditPlan,
+    ExecutePlanStep,
+)
 
-__all__ = ["CreatePlan", "AssessPlan", "WaitForUserInput", "EditPlan"]
+__all__ = [
+    "CreatePlan",
+    "AssessPlan",
+    "WaitForUserInput",
+    "EditPlan",
+    "ExecutePlanStep",
+]
