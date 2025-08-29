@@ -214,7 +214,9 @@ class AgentCall(Base):
     __tablename__ = "agent_calls"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
-    project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"))
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE")
+    )
     prompt = Column("prompt", Text, nullable=False)  # The prompt sent to the agent
     response = Column("response", Text, nullable=False)  # The agent's response
     created_at = Column(
